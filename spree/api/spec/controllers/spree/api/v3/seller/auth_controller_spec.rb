@@ -9,6 +9,15 @@ RSpec.describe Spree::Api::V3::Seller::AuthController, type: :controller do
     seller_user.update!(password: 'secret123', password_confirmation: 'secret123')
   end
 
+  describe 'GET #status' do
+    it 'returns the API status without authentication' do
+      get :status, as: :json
+
+      expect(response).to have_http_status(:ok)
+      expect(json_response).to eq('status' => 'ok')
+    end
+  end
+
   describe 'POST #create' do
     # The response serializes the signed-in user, and the registry key for that
     # is `admin_admin_user_serializer` — the shorter name resolves to nothing,

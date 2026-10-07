@@ -809,6 +809,7 @@ Spree::Core::Engine.add_routes do
         post 'auth/refresh', to: 'auth#refresh'
         post 'auth/logout', to: 'auth#logout'
         get 'auth/providers', to: 'auth#providers'
+        get 'auth/status', to: 'auth#status'
 
         # Public invitation acceptance — unauthenticated; the prefixed ID +
         # token in the emailed link are the credential.

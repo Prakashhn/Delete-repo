@@ -32,8 +32,8 @@ module Spree
 
           # Signing in is what establishes which sellers the caller may act as,
           # so these actions run before any seller is known.
-          skip_before_action :set_current_seller_context, only: [:create, :refresh, :logout, :providers]
-          skip_before_action :authenticate_seller!, only: [:create, :refresh, :logout, :providers]
+          skip_before_action :set_current_seller_context, only: [:create, :refresh, :logout, :providers, :status]
+          skip_before_action :authenticate_seller!, only: [:create, :refresh, :logout, :providers, :status]
 
           # POST /api/v3/seller/auth/login
           def create
@@ -63,6 +63,11 @@ module Spree
           # GET /api/v3/seller/auth/providers
           def providers
             render json: { providers: Spree.seller_authentication_strategies.describe }
+          end
+
+          # GET /api/v3/seller/auth/status
+          def status
+            render json: { status: 'ok' }
           end
 
           # POST /api/v3/seller/auth/refresh
