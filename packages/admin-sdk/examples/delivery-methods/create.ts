@@ -1,0 +1,18 @@
+import { createAdminClient } from '@spree/admin-sdk'
+
+const client = createAdminClient({
+  baseUrl: 'https://your-store.com',
+  secretKey: 'sk_xxx',
+})
+
+// region:example
+const deliveryMethod = await client.deliveryMethods.create({
+  name: 'Express',
+  storefront_visible: true,
+  calculator_type: 'flat_rate',
+  calculator_preferences: { amount: 12.5 },
+})
+
+// endregion:example
+
+export { deliveryMethod }

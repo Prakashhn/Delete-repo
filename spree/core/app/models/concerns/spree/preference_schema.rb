@@ -1,0 +1,292 @@
+module Spree
+  # Adds class-level helpers that surface a JSON-friendly description of
+  # a `Preferable` class's `preference :name, :type, default:` declarations.
+  #
+  # Used by the admin API (`/payment_methods/types`, `/promotion_actions/types`,
+  # `/promotion_rules/types`) so that admin UIs can render configuration forms
+  # for any provider/action/rule subclass without hard-coding field lists.
+  #
+  # Also hosts the subclass registry (`registers_subclasses_via`) that
+  # `find_by_api_type` and `subclasses_with_preference_schema` resolve against.
+  # That is a lodger rather than a natural fit — the registry is its own
+  # concept, and `Spree::CalculatedAdjustments` resolves an equivalent one
+  # separately. Extract a `Spree::RegisteredSubclasses` concern when a family
+  # needs the registry without preferences.
+  module PreferenceSchema
+    extend ActiveSupport::Concern
+
+    # Raised when a class reaches registry resolution without declaring one.
+    # A StandardError so host apps' normal rescues catch it — NotImplementedError
+    # descends from ScriptError and slips past `rescue => e`.
+    class UndeclaredRegistryError < StandardError; end
+
+    included do
+      # Where this class's registered subclasses live, as a block evaluated on
+      # the class. `class_attribute` so STI subclasses inherit their parent's
+      # declaration.
+      class_attribute :subclass_registry, instance_accessor: false, default: nil
+    end
+
+    delegate :preference_schema, :serialized_preference_schema, :password_preference_keys, to: :class
+
+    # Wire-safe view of `preferences` with `:password`-typed values
+    # masked. Lives here (not in the serializer) so any consumer holding
+    # a Preferable instance gets the same safety guarantee — secrets
+    # must never leave the server in plaintext. Keys are stringified to
+    # match the wire shape expected by JSON clients.
+    #
+    # @return [Hash{String => Object}]
+    def serialized_preferences
+      Spree::Preferences::Masking.serialize(self)
+    end
+
+    class_methods do
+      # Returns `[{ key:, type:, default: }]` for every preference declared
+      # on this class (and its ancestors). Skips deprecated and internal
+      # preferences.
+      #
+      # Memoized at class load — the schema is derived from the static
+      # `preference :name, :type` declarations, so it can never change at
+      # runtime. Each entry also caches `key_string` (frozen) so hot-path
+      # serializers don't allocate `pref.to_s` per request.
+      def preference_schema
+        @preference_schema ||= compute_preference_schema
+
+        # An empty list to callers either way; only the memo tells the two
+        # apart, so a schema that could not be computed is retried rather than
+        # settled on.
+        @preference_schema || []
+      end
+
+      # Wire-safe variant of `preference_schema` with `:password`
+      # defaults nilled out. A gateway author can set a non-empty
+      # default for a `:password` preference; without this redaction the
+      # default leaks alongside the masked live value. Memoized so admin
+      # index responses don't re-allocate per row.
+      #
+      # Strips `:key_string` — that's a server-only cache used by
+      # `Masking.serialize` to avoid `to_s` allocations per request, not
+      # part of the documented `{ key, type, default }` wire shape.
+      def serialized_preference_schema
+        fields = preference_schema
+        # Nothing to memoize yet: the schema could not be computed, and
+        # settling on its empty stand-in would outlive the reason for it.
+        return fields if @preference_schema.nil?
+
+        @serialized_preference_schema ||= fields.map do |field|
+          wire = { key: field[:key], type: field[:type], default: field[:default] }
+          wire[:choices] = field[:choices] if field[:choices].present?
+          wire[:default] = nil if field[:type] == :password
+          wire.freeze
+        end.freeze
+      end
+
+      # Set of `:password`-typed preference keys for this class. Memoized
+      # so write-side guards (e.g. the masked-round-trip check) don't
+      # walk the schema or fall back to a `rescue NoMethodError`.
+      def password_preference_keys
+        fields = preference_schema
+        return Set.new.freeze if @preference_schema.nil?
+
+        @password_preference_keys ||= fields
+                                      .each_with_object(Set.new) { |field, set| set << field[:key] if field[:type] == :password }
+                                      .freeze
+      end
+
+      # Declared order first, so a form reads the way its author grouped the
+      # fields; anything the macro did not record (an association writer that
+      # looks like a preference) keeps its existing place at the end.
+      def ordered_preferences(instance)
+        defined = instance.defined_preferences
+        return defined unless respond_to?(:declared_preference_order)
+
+        declared = declared_preference_order & defined
+        declared + (defined - declared)
+      end
+
+      def compute_preference_schema
+        # Only instantiation is guarded. `new` touches the database to read
+        # the column list, so it fails whenever the schema is asked for before
+        # a connection exists — at boot, or in a rake task on an empty
+        # database. Describing the preferences themselves is pure Ruby, so an
+        # error there is a real bug: left inside the rescue it would return an
+        # empty schema and quietly strip every field from the admin form.
+        # Nil rather than an empty list, so `preference_schema`'s `||=` asks
+        # again next time. Memoizing the failure would leave a class describing
+        # no preferences for the life of the process because it was first asked
+        # before the database was up.
+        instance = begin
+          new
+        rescue StandardError
+          return nil
+        end
+
+        ordered_preferences(instance).filter_map do |pref|
+          next if instance.preference_deprecated(pref)
+          # Written by Spree, not supplied by the operator — a value a
+          # provider hands back after we register something with it. Offering
+          # it as a field invites somebody to type over a secret that
+          # signature verification depends on.
+          next if instance.preference_internal(pref)
+
+          {
+            key: pref,
+            key_string: pref.to_s.freeze,
+            type: instance.preference_type(pref),
+            default: safe_preference_default(instance, pref),
+            choices: instance.preference_choices(pref)
+          }.compact.freeze
+        end
+      end
+
+      # Builds a `parse_on_set:` lambda for `preference :foo_ids, :array`
+      # declarations that accept prefixed IDs (e.g. `cg_…`, `mkt_…`) from
+      # the API. Splits comma-separated entries, strips whitespace, and
+      # decodes any prefixed IDs to raw IDs so eligibility checks compare
+      # against `belongs_to` foreign keys directly.
+      #
+      # When `klass` is nil, prefixed-ID decoding is skipped — used for
+      # ISO/string-keyed preferences where the value is the identifier
+      # (e.g. country `:country_codes`).
+      #
+      # When `scope:` is given, the existence check runs through the
+      # scope relation derived from the owning record — prevents a
+      # rule from being persisted with IDs that belong to another
+      # store (e.g. a Market rule referencing markets from a different
+      # store). The proc receives the rule instance.
+      #
+      # @param klass [Class<Spree::Base>, nil] AR class used to resolve
+      #   prefixed IDs via Sqids decoding + a single existence check.
+      # @param scope [Proc, nil] optional `->(rule) { rule.price_list.store.markets }`
+      #   relation builder; defaults to the unscoped `klass`.
+      # @return [Proc] suitable for the `parse_on_set:` preference option.
+      def normalize_id_preference(klass: nil, scope: nil)
+        lambda do |values, owner = nil|
+          raw = Array(values).flat_map { |v| v.to_s.split(',') }.compact_blank.map(&:strip)
+          next raw unless klass
+
+          decoded = raw.map do |v|
+            Spree::PrefixedId.prefixed_id?(v) ? Spree::PrefixedId.decode_prefixed_id(v).to_s : v
+          end
+
+          relation = scope && owner ? scope.call(owner) : klass
+          found = relation.where(id: decoded).pluck(:id).map(&:to_s).to_set
+          missing = decoded.reject { |id| found.include?(id) }
+          raise ActiveRecord::RecordNotFound.new(
+            "Couldn't find #{klass.name} with id=#{missing.join(',')}", klass.name
+          ) if missing.any?
+
+          decoded
+        end
+      end
+
+      # Resolve a wire-format shorthand back to its registered subclass.
+      # Returns nil for unknown shorthands. Lookup is registry-driven so
+      # removed/foreign subclasses can't be smuggled in.
+      def find_by_api_type(shorthand)
+        return nil if shorthand.blank?
+
+        registered_subclasses.find { |klass| klass.api_type == shorthand.to_s }
+      end
+
+      # Returns a `[{ type:, label:, description:, preference_schema: }]`
+      # array for every concrete subclass in `subclasses`. Sorted by label
+      # for stable output. Uses `serialized_preference_schema` so
+      # `:password` defaults are redacted — `/types` is an unauthenticated
+      # discovery surface and must never leak gateway-shipped defaults.
+      #
+      # `label` and `description` are a fallback, not the admin UI's copy:
+      # they resolve in the request's locale, which is the store's rather
+      # than the admin's interface language. The dashboard renders `type`
+      # from its own locale files and reads these only for a type it has no
+      # translation for — an extension gem shipping no dashboard locales.
+      def subclasses_with_preference_schema
+        registered_subclasses.map do |klass|
+          entry = {
+            type: klass.api_type,
+            label: subclass_label(klass),
+            # Families differ on which method carries the sentence: the rule
+            # base classes define `human_description`, the rest `description`.
+            # Asking for only one left promotion types with a null description
+            # and no fallback for a client without its own translation.
+            description: subclass_description(klass),
+            preference_schema: klass.respond_to?(:serialized_preference_schema) ? klass.serialized_preference_schema : []
+          }
+          # Only present when true, so families without the concept keep
+          # their wire shape byte-identical. Pickers stop offering a
+          # superseded kind; existing rows still render and match.
+          entry[:superseded] = true if klass.respond_to?(:superseded?) && klass.superseded?
+          entry
+        end.sort_by { |entry| entry[:label] }
+      end
+
+      # @return [String, nil] the class's own one-line description, from
+      #   whichever accessor its family defines
+      def subclass_description(klass)
+        return klass.human_description if klass.respond_to?(:human_description)
+        return klass.description if klass.respond_to?(:description)
+
+        nil
+      end
+
+      # STI subclasses share the parent's `model_name`, so calling
+      # `klass.model_name.human` would return "Payment Method" for every
+      # entry. Subclasses can override by defining a class-level
+      # `display_name`. Otherwise:
+      #
+      #   Spree::PaymentMethod::Check       → "Check"
+      #   Spree::Gateway::Bogus             → "Bogus"
+      #   SpreeStripe::Gateway              → "Stripe"
+      #   SpreeAdyen::Gateway               → "Adyen"
+      #
+      # The "Gateway" branch handles the gem convention where each
+      # provider gem ships a top-level `Gateway` class (so demodulize
+      # would collapse them all to "Gateway"). Fall back to the outer
+      # module, with a leading `Spree` namespace stripped.
+      def subclass_label(klass)
+        return klass.display_name if klass.respond_to?(:display_name) && klass.display_name.present?
+        return klass.human_name if klass.respond_to?(:human_name) && klass.human_name.present?
+
+        leaf = klass.to_s.demodulize
+        return leaf.titleize unless leaf == 'Gateway'
+
+        outer = klass.to_s.split('::').first.to_s
+        outer.delete_prefix('Spree').presence&.titleize || leaf.titleize
+      end
+
+      # Declares where this STI parent's subclass registry lives, powering
+      # `find_by_api_type` and `subclasses_with_preference_schema`. The block
+      # is evaluated on the class, so it can read config that changes at boot:
+      #
+      #   registers_subclasses_via { Spree.delivery_method_rules }
+      #
+      # @return [void]
+      def registers_subclasses_via(&block)
+        self.subclass_registry = block
+      end
+
+      private
+
+      # Resolves the declared registry.
+      #
+      # Raises rather than returning an empty list: a missing declaration used
+      # to mean `find_by_api_type` silently returned nil, so typed rows were
+      # dropped from a payload with no error and admin pickers rendered empty.
+      def registered_subclasses
+        raise UndeclaredRegistryError,
+              "#{name} has no subclass registry. Declare one with " \
+              '`registers_subclasses_via { ... }` returning the registered subclasses.' if subclass_registry.nil?
+
+        instance_exec(&subclass_registry)
+      end
+
+      # Defaults can be Procs that hit the database (e.g. `Spree::Store.default`);
+      # those aren't safe to evaluate at request time, so we stringify them.
+      def safe_preference_default(instance, pref)
+        instance.preference_default(pref)
+      rescue StandardError
+        nil
+      end
+    end
+  end
+end

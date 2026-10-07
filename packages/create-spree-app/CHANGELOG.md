@@ -1,0 +1,283 @@
+# create-spree-app
+
+## 2.1.0
+
+### Minor Changes
+
+- [#14710](https://github.com/spree/spree/pull/14710) [`36df7c7`](https://github.com/spree/spree/commit/36df7c72be7b41d46c29bb0445244e18fedecae0) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - New projects get Active Record encryption keys: the generated `.env` now includes `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY`, `ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY` and `ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT`, so webhook signing secrets, payment gateway customer IDs and OAuth tokens are encrypted at rest out of the box instead of being stored in plain text.
+
+### Patch Changes
+
+- [#14703](https://github.com/spree/spree/pull/14703) [`9e41f7d`](https://github.com/spree/spree/commit/9e41f7da03a9fd87050a78033620225922574d14) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - The generated README and the closing summary no longer point at a Rails admin at `/admin`, which Spree 6 does not have; without the React Dashboard, the summary shows the command that adds it. The subscriber example uses `order.placed` rather than the deprecated `order.completed`. The relocated `render.yaml` always builds `server/Dockerfile`, whether the starter's Blueprint was written for this layout or for deploying the starter on its own.
+
+## 2.0.2
+
+### Patch Changes
+
+- [#14667](https://github.com/spree/spree/pull/14667) [`53008b4`](https://github.com/spree/spree/commit/53008b4a30eeca633206e726f0303f1f8c0673d3) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Point the generated agent instructions at files that exist.
+
+  The scaffolded `AGENTS.md` sent dashboard work to a README that has since gained its own `AGENTS.md`, said nothing about the seller panel every project receives, listed a documentation directory that was renamed, and demonstrated a Ransack filter on `state`, which is no longer a queryable column.
+
+## 2.0.1
+
+### Patch Changes
+
+- Fixed first-run setup failing partway through, and scaffolded both admin apps.
+
+  Several failures could leave a new project unusable: minting the CLI's API key raised "Name has already been taken" on any re-run, so a setup interrupted for any reason could never be completed; Mailpit's ports were not probed like the web port, so another Spree project or a local mail catcher failed `docker compose up` with a raw Docker daemon error; sample data was loaded before first-run setup created an admin to own it, aborting the run; and a failed key mint reported that the stack was not running, sending operators after a stack that was running fine.
+
+  Scaffolds also create `apps/seller-dashboard` alongside `apps/dashboard` (`spree add seller-dashboard` adds it to an existing project). The React Dashboard is the admin in Spree 6, so it is no longer opt-in behind a flag, and first-run setup no longer prompts for an admin email and password — the account is created on the dashboard's own setup screen, which the browser opens automatically.
+
+## 2.0.0
+
+### Major Changes
+
+- [#14431](https://github.com/spree/spree/pull/14431) [`aab4b5c`](https://github.com/spree/spree/commit/aab4b5ca517d2ef559a5ba292965d66bd2d6f38d) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Scaffolded apps no longer ship with a known admin password.
+
+  Spree 6.0 replaces the seeded `spree@example.com` / `spree123` account with a first-run setup screen, so a new project no longer starts life with credentials that are public knowledge:
+
+  - The scaffold summary and the generated README point at first-run setup instead of printing an email and password.
+  - The first run opens the setup link, where you create the admin account and name the store.
+  - The exported `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_PASSWORD` constants are gone.
+
+### Minor Changes
+
+- Added the marketplace Seller Panel to project scaffolding and deployment.
+
+  `spree add seller-dashboard` scaffolds the panel into `apps/seller-dashboard/`, and `create-spree-app` now creates both admin apps. The CLI bundles the seller-panel starter template alongside the dashboard one, so the Spree starter's Docker image can bake both and serve the panel at `/sellers`.
+
+## 1.2.1
+
+### Patch Changes
+
+- [`61f85af`](https://github.com/spree/spree/commit/61f85af83531f3bf5f17aaf105f144b02336d73c) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Auto-enable the storefront wholesale B2B portal on sample-data scaffolds: create-spree-app writes `SPREE_WHOLESALE_CHANNEL=wholesale` into the storefront `.env.local`, and setup output points at the portal (`/wholesale`) with the buyer-approval flow. The portal runs on the default publishable key — no extra key or backend changes involved.
+
+## 1.2.0
+
+### Minor Changes
+
+- [`70ff9ac`](https://github.com/spree/spree/commit/70ff9ac7278a520521f4eeba9fd55f3802a4f6fb) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Support the pnpm-native storefront template (spree/storefront now ships a `pnpm-lock.yaml` and pins pnpm via `packageManager`):
+  - Point the relocated storefront CI's `pnpm/action-setup` and setup-node dependency cache at `apps/storefront/` — both resolve from the repo root by default, where the storefront's package.json and lockfile don't exist in the generated layout, failing the workflow outright on pnpm scaffolds.
+  - Stamp `packageManager` into the generated root package.json on pnpm scaffolds (steers corepack, and doubles as the pnpm version fallback for root-run workflows); omitted for npm/yarn scaffolds.
+  - Install the cloned storefront with `--frozen-lockfile` under pnpm so template manifest/lockfile drift fails loudly instead of resolving silently to an untested tree.
+  - Default the generated README/CLAUDE.md command examples to pnpm, matching the package-manager detection default.
+  - On yarn scaffolds, run storefront-scoped installs and command examples with pnpm — corepack-managed Yarn refuses to run inside the pnpm-pinned template, while the same corepack setup provisions the pinned pnpm on demand. npm scaffolds keep npm, which ignores the pin and keeps working.
+
+## 1.1.4
+
+### Patch Changes
+
+- Generated projects now test the storefront against their own customized
+  backend, not stock Spree. The storefront's CI workflow is relocated to the
+  project root (as `storefront-ci.yml`, renamed so it doesn't shadow the backend
+  check) and adapted to build `backend/Dockerfile` into a local image, which the
+  end-to-end suite boots via the new `SPREE_IMAGE` override — so E2E exercises the
+  exact Spree the project deploys, extensions and seed data included.
+
+## 1.1.3
+
+### Patch Changes
+
+- Single-node deployment out of the box: the relocated `render.yaml` now
+  deploys the backend as a Docker service built from the repo root (verbatim
+  from the starter — no more `rootDir` rewriting), so the ejected backend and
+  your customized `apps/dashboard` ship in one image with the dashboard
+  served same-origin at `/dashboard`. New projects also get a root
+  `.dockerignore` keeping that build context to sources.
+
+## 1.1.2
+
+### Patch Changes
+
+- The React Dashboard is no longer prompted for — it's a work-in-progress
+  Developer Preview, and a yes/no prompt reads as a recommendation. Include it
+  with the new `--react-dashboard` flag (or later via `spree add dashboard`);
+  the `--no-dashboard` flag is gone with the prompt.
+
+- Cut the duplicate output when scaffolding with the React Dashboard: the
+  delegated `spree add dashboard` summary card is suppressed (its content
+  lives in the main card), and the success card plus generated README present
+  the dashboard's dev server as THE admin — the `cd apps/dashboard &&
+pnpm dev` command with the admin credentials and a dim classic-admin
+  pointer — instead of two admins where only the classic one carried
+  credentials. `spree dev` co-runs that dev server with the API (one command,
+  whole environment), so the printed URL is live as soon as the stack is up.
+  For testing unreleased CLIs, the `SPREE_CLI_VERSION` env var overrides the
+  scaffolded `@spree/cli` dependency spec (a range or a `file:` tarball path
+  — same name as the starter Dockerfile's ARG). The scaffolded pin's floor is
+  now `^2.4.4` — the CLI behavior the scaffold relies on; an older resolve
+  would reject the new flags and silently drop the dashboard phase. Projects scaffolded without the dashboard keep the classic
+  `/admin` block exactly as before. User-facing wording now calls the Rails
+  app what it is to a storefront/dashboard developer — the Spree API
+  ("Customize the Spree API", "Start the Spree API") — ahead of the planned
+  `backend/` → `api/` directory rename. Requires `@spree/cli` 2.4.4.
+
+## 1.1.1
+
+### Patch Changes
+
+- A finished `create-spree-app` run now always means a working app. The
+  optional storefront and React Dashboard phases used to abort the whole
+  scaffold on failure — before the final setup phase (`spree init`: fresh
+  image pull, seeded database, API keys) ever ran — leaving a project whose
+  first boot silently started a stale, locally cached Spree image. Those
+  phases now warn and continue with a recovery command, cleaning up their
+  partial `apps/` directory so the recovery command actually works, and setup
+  always runs. Project docs (README.md, CLAUDE.md, dependabot.yml) are
+  generated after those phases from their actual outcomes, so they never
+  document an app whose setup failed. When services can't start during
+  scaffolding (`--no-start`, Docker off), the first `spree dev` completes
+  setup automatically (requires `@spree/cli` 2.4.2), honoring the sample-data
+  choice now persisted in `.env` (`SPREE_SAMPLE_DATA`), and the printed next
+  steps plus the generated README reflect that — nobody has to know
+  `spree init` exists.
+
+## 1.1.0
+
+### Minor Changes
+
+- Offer the React Dashboard (Developer Preview) as an optional component: a new
+  prompt (and `--no-dashboard` flag) scaffolds it into `apps/dashboard/` by
+  delegating to the project-local `spree add dashboard` (the CLI bundles the
+  starter template with version pins matching its release), and wires the
+  README, CLAUDE.md, and Dependabot config.
+
+New projects now default to **pnpm** when it's installed — it's what the
+Spree packages and docs are built around. An explicit invoking agent
+(`pnpm create spree-app`, `yarn create spree-app`) and the
+`--use-npm`/`--use-yarn`/`--use-pnpm` flags still win, and npm remains the
+fallback when pnpm is absent. The generated README, CLAUDE.md, and next-steps
+output now render commands for the chosen package manager instead of
+hardcoding npm.
+
+## 1.0.8
+
+### Patch Changes
+
+- Relocate the generated project's Render Blueprint (`render.yaml`) to the repository root and add `rootDir: backend` to every buildable service. In the wrapper layout the Rails app lives under `backend/`, so a Blueprint left in that subdirectory is invisible to Render and, without `rootDir`, its services build from the wrong directory — the deploy fails. The commented-out worker template is adjusted too, so uncommenting it still deploys correctly. Managed services (Redis, database) are left untouched.
+
+## 1.0.7
+
+### Patch Changes
+
+- Fix and tidy the generated project's CI for the nested `backend/` layout. The relocated `backend-ci.yml` now points `ruby/setup-ruby` and the `bin/rails`/`bundle` steps at `backend/`, so `ruby/setup-ruby` finds `.ruby-version` instead of failing with "input ruby-version needs to be specified". The starter's `release.yml` (which publishes the official Spree image) and its standalone `README.md` are no longer carried into the generated project.
+
+## 1.0.6
+
+### Patch Changes
+
+- Improve generated README and post-create next steps with links to the Spree documentation, Discord, and CLI.
+
+## 1.0.5
+
+### Patch Changes
+
+- Fix the `spree api` product-create example in the generated project README and CLAUDE.md. The sample payload now ships a `prices` array with a quoted string amount (`"29.99"`) instead of an unsupported top-level `price` scalar, matching the Admin API's expected shape.
+
+## 1.0.4
+
+### Patch Changes
+
+- Generated projects now document the Admin API CLI: `api`/`auth`/`api-key` passthrough scripts in `package.json`, an Admin API section in the README and CLAUDE.md showing `npx spree api get products` (works against the read-only key minted during setup), and the global-install option for a bare `spree` command.
+
+- Scaffolded `.gitignore` now excludes `.spree/` — the local Admin API credentials directory used by `spree api` / `spree auth`.
+
+## 1.0.3
+
+### Patch Changes
+
+- Fix `docker-compose.dev.yml` to bind-mount `./backend` instead of the project root. The scaffolded dev compose adjusted the build context for the wrapper layout but kept the starter's `.:/rails` source mount, so `spree eject` failed with `exec: "bin/rails": stat bin/rails: no such file or directory`.
+
+## 1.0.2
+
+### Patch Changes
+
+- Scaffolded projects now reference the Spree agent skills (`npx skills add spree/agent-skills`) in the generated AGENTS.md/CLAUDE.md and post-create next steps, and the generated README documents the new `spree dev` foreground behavior (streams logs, Ctrl+C stops the app).
+
+## 1.0.1
+
+### Patch Changes
+
+- Remove stale Mailpit references from the generated project README. Mailpit is no longer part of the docker-compose services.
+
+## 1.0.0
+
+### Major Release
+
+Stable release of `create-spree-app` for Spree Commerce 5.4.0. Scaffolds a complete Spree project with Docker, Meilisearch, and optional Next.js storefront. Now requires stable `@spree/cli` ^2.0.0.
+
+## 0.5.1
+
+### Patch Changes
+
+- Bump @spree/cli dependency to 2.0.0-beta.7 which includes search index initialization during `spree init`.
+
+## 0.5.0
+
+### Minor Changes
+
+- Add Meilisearch to docker-compose.yml for built-in full-text search with typo tolerance, relevance ranking, and faceted filtering. Meilisearch runs automatically alongside PostgreSQL and Redis — no additional setup needed for development.
+
+## 0.4.0
+
+### Minor Changes
+
+- Always include `backend/` directory (cloned from spree/spree-starter) with full Rails app for backend customization. Add `docker-compose.dev.yml` for local builds. Add `spree eject` script. Storefront is now optional via `--no-storefront` flag. Upgrade to PostgreSQL 18.
+
+## 0.3.3
+
+### Patch Changes
+
+- Bump `@spree/cli` dependency to `2.0.0-beta.5`
+
+## 0.3.2
+
+### Patch Changes
+
+- Bump `@spree/cli` dependency to `2.0.0-beta.4`
+
+## 0.3.1
+
+### Patch Changes
+
+- Updated storefront repository URL from `spree/nextjs-starter-spree` to `spree/storefront`
+
+## 0.3.0
+
+### Minor Changes
+
+- Integrate `@spree/cli` for day-to-day project management — scaffolded projects now include `@spree/cli` as a dependency with convenience scripts (`spree dev`, `spree stop`, `spree update`, `spree logs`, `spree console`, etc.)
+- Delegate first-run setup to `spree init` — database seeding, API key creation, sample data loading, and browser open are now handled by the CLI instead of the scaffolder
+- Rewrite Docker Compose template: switch from Solid Queue to Sidekiq + Redis, add Mailpit for local email, use YAML anchors for DRY config
+- Use sequential port selection via `get-port` with `portNumbers()` range instead of random ports
+- Add Mailpit URL to generated README
+
+## 0.2.2
+
+### Patch Changes
+
+- Replace giget with `git clone --depth 1` for downloading storefront template — fixes EACCES cache permission errors and reduces bundle size by 75%
+
+## 0.2.1
+
+### Patch Changes
+
+- Fix EACCES permission error when downloading storefront template by pre-creating the giget cache directory
+
+## 0.2.0
+
+### Minor Changes
+
+- Add dynamic port detection using get-port — if port 3000 is in use during scaffold, automatically picks the next available port. Add `--port` CLI flag for explicit override. Add `npm run stop` command.
+
+## 0.1.2
+
+### Patch Changes
+
+- Add background worker service to Docker Compose for Solid Queue job processing, rename service from `spree` to `web`/`worker`
+
+## 0.1.1
+
+### Patch Changes
+
+- Fix Docker compose template: use DATABASE_URL for production, set separate database URLs for cache/queue/cable, disable SSL for local development, and load SECRET_KEY_BASE via env_file

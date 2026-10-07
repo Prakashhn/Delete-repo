@@ -1,0 +1,125 @@
+require 'spec_helper'
+
+describe Spree.admin_user_class, type: :model do
+  let(:admin_user) { create(:admin_user) }
+
+  it_behaves_like 'account lockout' do
+    let(:lockable) { admin_user }
+  end
+
+  describe 'password reset tokens' do
+    it 'round-trips through find_by_password_reset_token' do
+      token = admin_user.generate_token_for(:password_reset)
+      expect(described_class.find_by_password_reset_token(token)).to eq(admin_user)
+    end
+
+    it 'invalidates the token when the password changes' do
+      token = admin_user.generate_token_for(:password_reset)
+      admin_user.update!(password: 'new-secret-123', password_confirmation: 'new-secret-123')
+      expect(described_class.find_by_password_reset_token(token)).to be_nil
+    end
+
+    # The token payload keys off the password salt/digest so it invalidates
+    # when the password changes. has_secure_password provides #password_salt
+    # (derived from password_digest); the generator also falls back through
+    # encrypted_password for a legacy bcrypt column on a custom model without a
+    # password_salt, so it never raises NameError.
+    it 'generates a password reset token from the password digest' do
+      expect(admin_user.generate_token_for(:password_reset)).to be_present
+    end
+  end
+
+  describe '#can_be_deleted?' do
+    subject { admin_user.can_be_deleted? }
+
+    context 'when store has other admin users' do
+      before do
+        create(:admin_user)
+      end
+
+      it { is_expected.to be(true) }
+    end
+
+    context 'when store has no other admin users' do
+      it { is_expected.to be(false) }
+    end
+  end
+
+  context 'Callbacks' do
+    describe 'cleans up admin user resources' do
+      let!(:other_admin_user) { create(:admin_user) }
+      let!(:cancelled_orders) { create_list(:order, 2, canceler: admin_user, state: 'canceled') }
+      let!(:approved_orders) { create_list(:order, 2, approver: admin_user) }
+      let!(:gift_card_batches) { create_list(:gift_card_batch, 2, created_by: admin_user, amount: 100, prefix: 'TEST') }
+      let!(:gift_cards) { create_list(:gift_card, 2, created_by: admin_user) }
+      let!(:refunds) { create_list(:refund, 2, refunder: admin_user, amount: 1) }
+      let!(:returns) { create_list(:return, 2, created_by: admin_user) }
+      let!(:store_credits) { create_list(:store_credit, 2, created_by: admin_user) }
+      let!(:exports) { create_list(:export, 2, user: admin_user) }
+
+      it 'nullifies admin user resources' do
+        expect { admin_user.destroy }.to change(Spree.admin_user_class, :count).by(-1).and change(Spree::Export, :count).by(-2)
+
+        expect(cancelled_orders.all? { |order| order.reload.canceler_id.nil? }).to be_truthy
+        expect(approved_orders.all? { |order| order.reload.approver_id.nil? }).to be_truthy
+        expect(gift_card_batches.all? { |batch| batch.reload.created_by_id.nil? }).to be_truthy
+        expect(gift_cards.all? { |gift_card| gift_card.reload.created_by_id.nil? }).to be_truthy
+        expect(refunds.all? { |refund| refund.reload.refunder_id.nil? }).to be_truthy
+        expect(returns.all? { |return_record| return_record.reload.created_by_id.nil? }).to be_truthy
+        expect(store_credits.all? { |store_credit| store_credit.reload.created_by_id.nil? }).to be_truthy
+      end
+
+      # A type left behind would name a class no id points at.
+      it 'clears both halves of a polymorphic actor' do
+        admin_user.destroy
+
+        expect(cancelled_orders.map { |order| order.reload.canceler_type }).to all(be_nil)
+        expect(approved_orders.map { |order| order.reload.approver_type }).to all(be_nil)
+        expect(refunds.map { |refund| refund.reload.refunder_type }).to all(be_nil)
+        expect(returns.map { |record| record.reload.created_by_type }).to all(be_nil)
+      end
+
+      # Deleting a member of staff has to erase them from rows written before
+      # the actor columns existed too — that window is exactly the upgrade
+      # path, and it is personal data.
+      it 'clears a row the backfill has not reached yet' do
+        legacy = create(:order, canceler: admin_user, state: 'canceled')
+        Spree::Order.where(id: legacy.id).update_all(canceler_type: nil)
+
+        admin_user.destroy
+
+        expect(legacy.reload.canceler_id).to be_nil
+      end
+
+      # Ids are per-table, so an API key can share this user's numeric id. A
+      # bare foreign key would have swept its rows up with the user's.
+      it 'leaves another kind of actor alone' do
+        api_key = create(:api_key, :secret)
+        key_order = create(:order, canceler: api_key, state: 'canceled')
+
+        admin_user.destroy
+
+        expect(key_order.reload.canceler).to eq(api_key)
+      end
+    end
+  end
+
+  describe '#destroy (regression tests)' do
+    subject(:destroy_admin_user) { admin_user.destroy }
+
+    context 'admin user invited other' do
+      let(:other_user) { create(:admin_user, email: 'other_user@example.com', without_admin_role: true) }
+      let(:invitation) { create(:invitation, email: other_user.email, inviter: admin_user) }
+
+      context 'other users accept invitation' do
+        before do
+          Spree.invitation_accept_workflow.call(invitation: invitation)
+        end
+
+        it 'does not remove other user\'s role' do
+          expect { destroy_admin_user }.not_to change { other_user.role_users.count }
+        end
+      end
+    end
+  end
+end

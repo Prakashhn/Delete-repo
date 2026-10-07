@@ -1,0 +1,250 @@
+module Spree
+  module Api
+    module V3
+      module Store
+        class CartsController < Store::ResourceController
+          include Spree::Api::V3::CartResolvable
+          include Spree::Api::V3::OrderLock
+          # The cart accepts a `po_document` signed blob id.
+          include ActiveStorage::SetCurrent
+
+          # A tampered signed id would otherwise surface as a 500.
+          rescue_from ActiveSupport::MessageVerifier::InvalidSignature, with: :render_invalid_po_document
+
+          skip_before_action :set_resource
+          prepend_before_action :require_authentication!, only: [:index, :associate]
+
+          # GET /api/v3/store/carts/:id
+          # Returns cart by prefixed ID
+          # Auto-advances the checkout state machine so that shipments and
+          # payment requirements are up-to-date (temporary until Spree 6 removes
+          # the state machine).
+          def show
+            @cart = find_cart
+
+            # Never under a live completion claim — the advance mutates under
+            # with_order_lock, and a read must not 409 against the fence.
+            if @cart.ship_address_id.present? && @cart.fulfillments.empty? && !@cart.completion_claimed?
+              ActiveRecord::Base.connected_to(role: :writing) do
+                with_order_lock { Spree.checkout_advance_service.call(order: @cart) }
+              end
+            end
+
+            # The customer is returning to a cart that may have sat for days.
+            sweep_unbuyable_lines!
+            sweep_unavailable_coupon_code!
+            render_cart
+          end
+
+          # POST /api/v3/store/carts
+          # Creates a new shopping cart (order)
+          # Can be created by guests or authenticated customers
+          def create
+            result = Spree.carts_create_service.call(
+              params: permitted_params.merge(
+                customer: current_user,
+                store: current_store,
+                channel: current_channel,
+                currency: current_currency,
+                locale: current_locale
+              )
+            )
+
+            if result.success?
+              @cart = result.value
+              render_cart(status: :created)
+            else
+              render_service_error(result.error.to_s)
+            end
+          end
+
+          # PATCH /api/v3/store/carts/:id
+          # Updates cart info (email, addresses, special instructions).
+          # Auto-advances to the next checkout step when possible.
+          def update
+            find_cart!
+
+            with_order_lock do
+              result = Spree.carts_update_service.call(
+                cart: @cart,
+                params: permitted_params
+              )
+
+              if result.success?
+                sweep_unavailable_coupon_code!
+                render_cart
+              else
+                render_service_error(result.error, code: ERROR_CODES[:validation_error])
+              end
+            end
+          end
+
+          # DELETE /api/v3/store/carts/:id
+          # Deletes/abandons the cart
+          def destroy
+            find_cart!
+
+            result = Spree.cart_destroy_service.call(cart: @cart)
+
+            if result.success?
+              head :no_content
+            else
+              render_service_error(result.error.to_s)
+            end
+          end
+
+          # PATCH /api/v3/store/carts/:id/associate
+          # Associates a guest cart with the currently authenticated user.
+          # Requires: JWT authentication + cart ID in URL + possession of the
+          # cart's token (x-spree-token). The token is the credential that
+          # authorizes claiming the cart, so it is required even when the cart
+          # is already the caller's own.
+          def associate
+            @cart = find_cart_for_association
+            authorize_storefront_write!(@cart, token: cart_token)
+            require_cart_token!
+
+            result = Spree.cart_associate_service.call(guest_cart: @cart, customer: current_user, guest_only: true)
+
+            if result.success?
+              # Signing in hands back a cart built earlier, possibly long ago.
+              sweep_unbuyable_lines!
+              sweep_unavailable_coupon_code!
+              render_cart
+            else
+              render_service_error(result.error.to_s)
+            end
+          end
+
+          # POST /api/v3/store/carts/:id/complete
+          # Completes the checkout — returns Order (not Cart).
+          # Idempotent: if the cart is already completed, falls back to the
+          # orders scope and returns the completed order.
+          def complete
+            find_cart!(include_completed: true)
+
+            if @cart.guest_checkout_disallowed?
+              return render_authentication_required('api.errors.guest_checkout_not_allowed', 'You must be signed in to complete checkout')
+            end
+
+            result = Spree::Dependencies.carts_complete_workflow.constantize.call(cart: @cart)
+
+            if result.success?
+              @cart = result.value
+              render_order
+            else
+              render_service_error(
+                result.error.to_s.presence || 'Could not complete checkout',
+                code: ERROR_CODES[:cart_cannot_complete]
+              )
+            end
+          rescue ActiveRecord::RecordNotFound
+            # Gateway-race retry with the id the client got back: the webhook
+            # completed the cart and the client re-posts. Foreign prefixes never
+            # decode against carts, so this only fires for an order or group id
+            # (or a genuinely unknown one, which 404s below). A split checkout
+            # handed the client a group, so both have to resolve here.
+            @cart = find_completed_result!
+            authorize_storefront_read!(@cart, token: cart_token)
+
+            render_order
+          end
+
+          protected
+
+          # The completed result behind an id the client is retrying with —
+          # either the single order a plain checkout produced, or the group a
+          # split one did.
+          #
+          # @return [Spree::Order, Spree::OrderGroup]
+          def find_completed_result!
+            current_store.orders.complete.find_by_prefix_id!(params[:id])
+          rescue ActiveRecord::RecordNotFound
+            current_store.order_groups.find_by_prefix_id!(params[:id])
+          end
+
+          def model_class
+            Spree::Order
+          end
+
+          def serializer_class
+            Spree.api.cart_serializer
+          end
+
+          # Channel-scoped: a storefront surface lists only its own channel's
+          # carts — without this, a blended DTC + wholesale storefront leaks
+          # the user's wholesale cart into the DTC surface (and vice versa).
+          # Explicit by-ID lookups (show/update) stay cross-channel so a shared
+          # checkout can load any cart the caller is authorized for.
+          def scope
+            storefront_access_policy.
+              scope(current_store.carts.incomplete.where(channel: current_channel)).
+              order(updated_at: :desc)
+          end
+
+          private
+
+          def render_invalid_po_document
+            render_error(
+              code: ERROR_CODES[:validation_error],
+              message: Spree.t(:po_document_invalid_signed_id),
+              status: :unprocessable_content
+            )
+          end
+
+          def permitted_params
+            params.permit(
+              *model_additional_permitted_attributes,
+              :email,
+              :customer_note,
+              :market_id,
+              :currency,
+              :locale,
+              :shipping_address_id,
+              :billing_address_id,
+              :preferred_stock_location_id,
+              :company_id,
+              # The buyer's own purchase-order reference, and the signed blob id
+              # of the document behind it (from POST .../carts/:id/po_document).
+              :po_number,
+              :po_document,
+              :use_shipping,
+              shipping_address: address_params,
+              billing_address: address_params,
+              metadata: {},
+              items: item_params
+            )
+          end
+
+          def address_params
+            [
+              :id, :first_name, :last_name,
+              :address1, :address2,
+              :city, :postal_code, :phone, :company,
+              # country_iso and state_abbr are the legacy write names, accepted until 6.1.
+              :country_code, :country_iso, :state_code, :state_abbr, :state_name, :quick_checkout
+            ]
+          end
+
+          def item_params
+            [:variant_id, :quantity, { metadata: {}, options: {} }]
+          end
+
+          # Find incomplete cart for associate action.
+          # Only finds guest carts (no user) or carts already owned by current user (idempotent).
+          def find_cart_for_association
+            current_store.carts.incomplete.where(customer: [nil, current_user]).find_by_prefix_id!(params[:id])
+          end
+
+          # Claiming a cart requires presenting its token, even when the caller
+          # already owns it — the token, not ownership, is the claim credential.
+          def require_cart_token!
+            valid = cart_token.present? && cart_token == @cart.token
+
+            raise Spree::Storefront::AccessDenied unless valid
+          end
+        end
+      end
+    end
+  end
+end

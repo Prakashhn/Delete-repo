@@ -1,0 +1,27 @@
+module Spree
+  module Api
+    module V3
+      module Admin
+        # Admin CRUD for `Spree::CustomerGroup`. Scoped to the current
+        # store so groups from sibling stores don't leak into pickers.
+        class CustomerGroupsController < ResourceController
+          scoped_resource :customers
+
+          protected
+
+          def model_class
+            Spree::CustomerGroup
+          end
+
+          def serializer_class
+            Spree.api.admin_customer_group_serializer
+          end
+
+          def permitted_params
+            params.permit(*model_additional_permitted_attributes, :name, :description, customer_ids: [])
+          end
+        end
+      end
+    end
+  end
+end

@@ -1,0 +1,292 @@
+require 'spec_helper'
+
+module Spree
+  RSpec.describe Orders::Create do
+    let(:store) { @default_store }
+    let(:user) { create(:user) }
+
+    # Real shipping setup so Stock::Coordinator actually produces shipments.
+    let(:country) { @default_country }
+    let(:state)   { country.states.first || create(:state, country: country) }
+    let!(:zone)   { create(:zone) }
+    let!(:shipping_method) do
+      create(:delivery_method).tap do |sm|
+        sm.calculator.preferred_amount = 5
+        sm.calculator.save
+      end
+    end
+    let!(:stock_location) { Spree::StockLocation.first || create(:stock_location, country: country, state: state) }
+
+    let(:product) { create(:product_in_stock) }
+    let(:variant) { product.default_variant }
+
+    let(:address_attrs) do
+      {
+        firstname: 'Jane', lastname: 'Doe',
+        address1: '350 Fifth Avenue', city: 'New York',
+        zipcode: '10118', phone: '555-555-0199',
+        country_code: country.iso, state_abbr: state.abbr
+      }
+    end
+
+    describe '#call' do
+      subject { described_class.call(store: store, customer: user, params: params) }
+
+      context 'without a store' do
+        it 'fails' do
+          result = described_class.call(store: nil)
+          expect(result).to be_failure
+          expect(result.value).to eq(:store_is_required)
+        end
+      end
+
+      context 'with a creating staff member' do
+        let(:admin) { create(:admin_user) }
+        let(:params) { { email: 'new@example.com' } }
+
+        it 'stamps created_by' do
+          result = described_class.call(store: store, customer: user, created_by: admin, params: params)
+
+          expect(result).to be_success
+          expect(result.value.created_by).to eq(admin)
+        end
+      end
+
+      context 'with minimal params (no items, no address)' do
+        let(:params) { { email: 'new@example.com' } }
+
+        it 'creates a draft order with no shipments' do
+          expect(subject).to be_success
+          order = subject.value
+          expect(order).to be_persisted
+          expect(order.status).to eq('draft')
+          expect(order.shipments).to be_empty
+          expect(order.shipment_total).to eq(0)
+        end
+      end
+
+      context 'with items but no shipping address' do
+        let(:params) do
+          {
+            email: 'new@example.com',
+            items: [{ variant_id: variant.prefixed_id, quantity: 2 }]
+          }
+        end
+
+        it 'does not build shipments — total reflects only items' do
+          expect(subject).to be_success
+          order = subject.value
+          expect(order.line_items.count).to eq(1)
+          expect(order.shipments).to be_empty
+          expect(order.shipment_total).to eq(0)
+          expect(order.total).to eq(order.item_total)
+        end
+      end
+
+      context 'with shipping address but no items' do
+        let(:params) do
+          {
+            email: 'new@example.com',
+            shipping_address: address_attrs
+          }
+        end
+
+        it 'does not build shipments' do
+          expect(subject).to be_success
+          order = subject.value
+          expect(order.ship_address).to be_present
+          expect(order.shipments).to be_empty
+          expect(order.shipment_total).to eq(0)
+        end
+      end
+
+      context 'happy path: items + shipping address' do
+        let(:params) do
+          {
+            email: 'new@example.com',
+            items: [{ variant_id: variant.prefixed_id, quantity: 2 }],
+            shipping_address: address_attrs
+          }
+        end
+
+        it 'creates shipments and rolls delivery cost into the order total' do
+          expect(subject).to be_success
+          order = subject.value
+
+          expect(order.line_items.count).to eq(1)
+          expect(order.shipments).not_to be_empty
+          expect(order.fulfillments.first.shipping_rates).not_to be_empty
+          expect(order.fulfillments.first.selected_shipping_rate).to be_present
+
+          expect(order.shipment_total).to eq(5)
+          expect(order.total).to eq(order.item_total + order.shipment_total + order.adjustment_total)
+        end
+
+        it 'persists the totals to the database' do
+          subject
+          order = subject.value.reload
+          expect(order.shipment_total).to eq(5)
+          expect(order.total).to eq(order.item_total + 5 + order.adjustment_total)
+        end
+      end
+
+      context 'when delivery is not required' do
+        let(:params) do
+          {
+            email: 'new@example.com',
+            items: [{ variant_id: variant.prefixed_id, quantity: 1 }],
+            shipping_address: address_attrs
+          }
+        end
+
+        before do
+          allow_any_instance_of(Spree::Order).to receive(:delivery_step_required?).and_return(false)
+        end
+
+        it 'does not build shipments' do
+          expect(subject).to be_success
+          expect(subject.value.shipments).to be_empty
+          expect(subject.value.shipment_total).to eq(0)
+        end
+      end
+
+      context 'with a free-shipping coupon code' do
+        let!(:promotion) do
+          create(:free_shipping_promotion, code: 'SHIP10')
+        end
+
+        let(:params) do
+          {
+            email: 'new@example.com',
+            items: [{ variant_id: variant.prefixed_id, quantity: 1 }],
+            shipping_address: address_attrs,
+            coupon_code: 'SHIP10'
+          }
+        end
+
+        it 'builds shipments first, then the free-shipping promo cancels the delivery cost' do
+          expect(subject).to be_success
+          order = subject.value
+
+          # Shipments still exist, gross cost is still 5 (cost column on the shipment)
+          expect(order.shipments.size).to eq(1)
+          expect(order.shipment_total).to eq(5)
+
+          # Promo created a -5 adjustment on the shipment
+          shipment = order.fulfillments.first
+          expect(shipment.adjustment_total).to eq(-5)
+          expect(shipment.discounts.promotion.size).to eq(1)
+          expect(order.shipping_discount).to eq(5)
+
+          # Promotion is associated with the order
+          expect(order.promotions).to include(promotion)
+
+          # Customer-visible total is item_total only — free shipping nets out
+          expect(order.total).to eq(order.item_total)
+        end
+      end
+
+      context 'with a batch coupon code the order does not qualify for yet' do
+        let!(:promotion) do
+          create(:promotion_with_item_total_rule, :with_order_adjustment,
+                 code: nil, multi_codes: true, number_of_codes: 1, kind: :coupon_code, store: store,
+                 item_total_threshold_amount: 1_000)
+        end
+        let(:coupon_code) { promotion.coupon_codes.first }
+
+        let(:params) do
+          {
+            email: 'new@example.com',
+            items: [{ variant_id: variant.prefixed_id, quantity: 1 }],
+            coupon_code: coupon_code.code
+          }
+        end
+
+        it 'leaves the code free for others' do
+          expect(subject).to be_success
+          expect(subject.value.read_attribute(:coupon_code)).to be_nil
+          expect(coupon_code.reload.holder).to be_nil
+        end
+      end
+
+      context 'with an automatic free-shipping promotion (no coupon code)' do
+        let!(:promotion) do
+          create(:free_shipping_promotion, kind: :automatic)
+        end
+
+        let(:params) do
+          {
+            email: 'new@example.com',
+            items: [{ variant_id: variant.prefixed_id, quantity: 1 }],
+            shipping_address: address_attrs
+          }
+        end
+
+        it 'applies the promotion during shipment building, even without a coupon code' do
+          expect(subject).to be_success
+          order = subject.value
+
+          shipment = order.fulfillments.first
+          expect(shipment).to be_present
+          expect(shipment.adjustment_total).to eq(-5)
+          expect(order.shipping_discount).to eq(5)
+          expect(order.total).to eq(order.item_total)
+        end
+      end
+
+      context 'when add_items fails because the variant is out of stock' do
+        # Product factory propagates stock items as +backorderable: true+ by
+        # default. Strip both so the LineItem +quantity_available+ validation
+        # fires and UpsertItems returns a failing line_item.
+        let(:out_of_stock_product) do
+          create(:product).tap do |p|
+            p.default_variant.stock_levels.update_all(count_on_hand: 0, backorderable: false)
+          end
+        end
+        let(:params) do
+          {
+            email: 'new@example.com',
+            items: [{ variant_id: out_of_stock_product.default_variant.prefixed_id, quantity: 1 }]
+          }
+        end
+
+        it 'returns a failure result' do
+          expect(subject).to be_failure
+        end
+
+        it 'propagates the failing record errors onto the order so the controller renders 422 with content' do
+          order = subject.value
+          expect(order).to be_a(Spree::Order)
+          expect(order.errors[:base]).not_to be_empty
+        end
+
+        it 'rolls back the order so no draft is persisted on failure' do
+          expect { subject }.not_to change(Spree::Order, :count)
+        end
+      end
+    end
+
+    # Same signed-id state as the storefront's, one step further along: without
+    # handling this it is an unhandled 500 on the Admin API.
+    describe 'a purchase order document whose upload never completed' do
+      let(:orphan_blob) do
+        ActiveStorage::Blob.create_before_direct_upload!(
+          filename: 'po.pdf', byte_size: 12, checksum: 'x' * 22,
+          content_type: 'application/pdf', service_name: Spree.private_storage_service_name
+        )
+      end
+
+      it 'fails with a readable message rather than raising' do
+        result = nil
+        expect {
+          result = described_class.call(
+            store: store, params: { email: 'buyer@example.com', po_document: orphan_blob.signed_id }
+          )
+        }.not_to raise_error
+
+        expect(result).to be_failure
+        expect(result.error.to_s).to include(Spree.t(:po_document_upload_incomplete))
+      end
+    end
+  end
+end

@@ -1,0 +1,65 @@
+module Spree
+  module Api
+    module V3
+      module Admin
+        module Products
+          class VariantsController < ResourceController
+            scoped_resource :products
+
+            protected
+
+            def model_class
+              Spree::Variant
+            end
+
+            def serializer_class
+              Spree.api.admin_variant_serializer
+            end
+
+            def set_parent
+              @parent = current_store.products.find_by_prefix_id!(params[:product_id])
+              authorize!(:show, @parent)
+            end
+
+            def scope_includes
+              [:prices, stock_levels: :stock_location]
+            end
+
+            def create_workflow
+              Spree.variant_create_workflow
+            end
+
+            def update_workflow
+              Spree.variant_update_workflow
+            end
+
+            # A variant belongs to a product, not directly to a store, and
+            # everything nested in the payload is resolved through it — an
+            # option value attaches its option type to the product, a stock
+            # location is scoped to the product's store.
+            def create_workflow_arguments
+              { product: @parent, attributes: permitted_params }
+            end
+
+            def permitted_params
+              params.permit(
+                *model_additional_permitted_attributes,
+                :sku, :barcode,
+                :cost_price, :cost_currency,
+                :weight, :height, :width, :depth, :weight_unit, :dimensions_unit,
+                :hs_code, :country_of_origin, :customs_description,
+                :minimum_order_quantity, :order_multiple, :purchase_unit, :units_per_carton,
+                :carton_package_type_id, :carton_weight, :cartons_per_pallet,
+                :seller_id, :delivery_profile_id,
+                :track_inventory, :preorderable, :preorder_ships_at, :backorder_limit, :tax_category_id, :position,
+                options: [:name, :value],
+                prices: [:amount, :compare_at_amount, :currency],
+                stock_levels: [:stock_location_id, :count_on_hand, :backorderable]
+              )
+            end
+          end
+        end
+      end
+    end
+  end
+end

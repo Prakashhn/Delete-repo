@@ -1,0 +1,201 @@
+module Spree
+  module Api
+    module V3
+      class BaseSerializer
+        include Alba::Resource
+        include Typelizer::DSL
+
+        # Common type hints for fields present in most serializers
+        typelize id: :string, created_at: :string, updated_at: :string
+
+        # Use prefixed IDs (Stripe-style) for all API v3 serializers
+        # e.g., prod_86Rf07xd4z, variant_k5nR8xLq, or_m3Rp9wXz
+        attribute :id do |object|
+          next nil unless object.respond_to?(:prefixed_id)
+
+          object.prefixed_id
+        end
+
+        # Declares money/display attributes that render +null+ for gated
+        # (prices_hidden) guests, keyed off the same +hide_prices+ flag the
+        # +price_for+/+price_in+ helpers use — so the whole price surface
+        # (product prices AND cart/order/line-item totals) is gated from one
+        # place instead of per-attribute opt-in.
+        def self.money_attributes(*names)
+          typelize(**names.index_with { [:string, nullable: true] })
+
+          names.each do |name|
+            attribute(name) { |object| object.public_send(name) unless params[:hide_prices] }
+          end
+        end
+
+        # Declares `<association>_id` attributes carrying the associated
+        # record's prefixed id, or nil when there is none. Pass
+        # `seller_id: :resolved_seller` when the attribute name and the
+        # association it reads differ.
+        def self.prefixed_id_attributes(*associations, **renamed)
+          associations.index_by { |association| :"#{association}_id" }.merge(renamed).each do |name, association|
+            attribute(name) { |object| object.public_send(association)&.prefixed_id }
+          end
+        end
+
+        # Declares the wire form of an `acted_by` association: the actor's
+        # prefixed id, the kind of actor it is, and the expansion. Both
+        # halves read off the columns, so naming an actor costs no query and
+        # the id and the kind always describe the same row (see
+        # docs/plans/6.0-action-actors.md).
+        #
+        # Declare the matching `typelize` entries alongside, as with any
+        # other attribute.
+        def self.actor_attributes(*names)
+          names.each do |name|
+            attribute(:"#{name}_id") { |object| object.acted_by_prefixed_id(name) }
+
+            attribute(:"#{name}_type") do |object|
+              Spree::Base.polymorphic_api_type(object.acted_by_type(name))
+            end
+
+            one name,
+                resource: proc { Spree.api.admin_actor_serializer },
+                if: proc { expand?(name.to_s) }
+          end
+        end
+
+        # Plain decimal notation. BigDecimal renders 0.06 as "0.6e-1", which
+        # is what a client would otherwise print beside a unit.
+        #
+        # @param value [BigDecimal, Numeric, nil]
+        # @return [String, nil]
+        def decimal_string(value)
+          return if value.nil?
+
+          BigDecimal(value.to_s).to_s('F')
+        end
+
+        # Context accessors
+        def current_store
+          params[:store]
+        end
+
+        def current_currency
+          params[:currency]
+        end
+
+        def current_user
+          params[:user]
+        end
+
+        def current_locale
+          params[:locale]
+        end
+
+        def expands
+          @expands ||= Array(params[:expand] || [])
+        end
+
+        # Check if an association should be expanded
+        # Supports dot notation: expand?('variants') matches both 'variants' and 'variants.media'
+        def expand?(name)
+          name = name.to_s
+          expands.any? { |e| e == name || e.start_with?("#{name}.") }
+        end
+
+        # Get nested expands for a given parent
+        def nested_expands_for(parent)
+          prefix = "#{parent}."
+          expands.select { |i| i.start_with?(prefix) }.map { |i| i.sub(prefix, '') }
+        end
+
+        # Build nested params for child serializers with depth limit (max 4 levels)
+        def nested_params(parent)
+          depth = params.fetch(:_expand_depth, 0)
+          nested = depth < 4 ? nested_expands_for(parent) : []
+          params.merge(expand: nested, _expand_depth: depth + 1)
+        end
+
+        private
+
+        # Override Alba's fetch_attribute to automatically inject nested expand params
+        # into child serializers via nested_params.
+        # Uses `key` (the public API name, e.g. :categories) for expand lookup,
+        # not `attribute.name` (the internal association name, e.g. :taxons).
+        def fetch_attribute(obj, key, attribute)
+          if attribute.is_a?(Alba::Association)
+            nested = nested_params(key)
+            yield_if_within(attribute.name.to_sym) { |within| attribute.to_h(obj, params: nested, within: within) }
+          else
+            super
+          end
+        end
+
+        # The variant a product leads with in the request's currency: the buy
+        # box winner, else the default variant. Resolved in the same currency
+        # `price_for` prices in, so the two never describe different rows.
+        def featured_variant(product)
+          product.featured_variant(currency: current_currency)
+        end
+
+        # Returns price for a variant using full Price List resolution
+        # This may return a price from a price list if applicable
+        # Memoized per variant to avoid duplicate queries
+        def price_for(variant, quantity: nil)
+          return nil unless variant.respond_to?(:price_for)
+          return nil if params[:hide_prices]
+
+          @price_for_cache ||= {}
+          cache_key = [variant.id, quantity]
+          return @price_for_cache[cache_key] if @price_for_cache.key?(cache_key)
+
+          @price_for_cache[cache_key] = variant.price_for(
+            currency: current_currency,
+            store: current_store,
+            user: current_user,
+            quantity: quantity
+          )
+        end
+
+        # The buyer's effective purchasing rules for a variant — their
+        # catalogs' commercial terms resolved over the variant's own base
+        # rules. Read from the request context the same way price_for does,
+        # so a storefront gets the stepper matching the price it is quoted.
+        #
+        # The resolver is request-scoped, not instance-scoped: Alba builds a
+        # fresh serializer for every element of a collection, so a memo held
+        # here would reload each catalog's override rows once per row on the
+        # page. Resolving without the buyer's company would also answer from
+        # a different agreement than the one pricing the same page.
+        def quantity_rule_for(variant)
+          return Spree::QuantityRule.new if current_store.nil?
+
+          Spree::Current.quantity_rules_resolver_for(
+            company: Spree::Current.standing_company_for(current_user),
+            user: current_user
+          ).call(variant)
+        end
+
+        # Returns the base price for a variant without Price List resolution
+        # This is the "original" price before any price list discounts
+        # Memoized per variant to avoid duplicate queries
+        def price_in(variant)
+          return nil unless variant.respond_to?(:price_in)
+          return nil if params[:hide_prices]
+
+          @price_in_cache ||= {}
+          return @price_in_cache[variant.id] if @price_in_cache.key?(variant.id)
+
+          @price_in_cache[variant.id] = variant.price_in(current_currency)
+        end
+
+        def image_url_for(image)
+          return nil if image.nil?
+          return nil unless image.respond_to?(:attached?) && image.attached?
+
+          # Handle Spree::Media rows, which keep the file in `attachment`
+          # vs direct ActiveStorage attachments (like taxon.image)
+          attachment = image.is_a?(Spree::Media) ? image.attachment : image
+          Rails.application.routes.url_helpers.cdn_image_url(attachment)
+        end
+      end
+    end
+  end
+end

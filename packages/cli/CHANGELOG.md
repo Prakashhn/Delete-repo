@@ -1,0 +1,385 @@
+# @spree/cli
+
+## 3.1.0
+
+### Minor Changes
+
+- [#14710](https://github.com/spree/spree/pull/14710) [`36df7c7`](https://github.com/spree/spree/commit/36df7c72be7b41d46c29bb0445244e18fedecae0) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - New `spree encryption init` command adds Active Record encryption keys (`ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY`, `_DETERMINISTIC_KEY`, `_KEY_DERIVATION_SALT`) to an existing project's `.env`, so Spree encrypts webhook signing secrets, payment gateway customer IDs and OAuth tokens at rest instead of storing them in plain text. It never overwrites keys that are already set. `spree encryption init --print` only prints a fresh set, for your production host.
+
+### Patch Changes
+
+- [#14703](https://github.com/spree/spree/pull/14703) [`9e41f7d`](https://github.com/spree/spree/commit/9e41f7da03a9fd87050a78033620225922574d14) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - `spree plugin new` now scaffolds a dashboard plugin that installs against the current dashboard. Its `@spree/admin-sdk` and `@spree/dashboard-*` peer ranges come from the versions released alongside the CLI, instead of old `0.x` ranges no published package matched. The plugin package also gains a `build` script, so `pnpm build` at the plugin root no longer fails, and a `sideEffects` entry so bundlers never drop the import that registers the plugin. The generated README no longer describes an `engine/` directory the CLI does not create.
+
+  `spree build --production` builds from the project root again with the current starter Dockerfile, so a customized `apps/dashboard` is included in the image instead of being left out.
+
+- [#14697](https://github.com/spree/spree/pull/14697) [`f43bed2`](https://github.com/spree/spree/commit/f43bed2cdbfb35df3d9d5d10d3b6c3cc13e7f168) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - `spree upgrade` no longer reminds you to schedule `Spree::StockReservations::ExpireJob`, a Spree 5.5 step that every 5.6 installation has already done. The "Next steps" panel now points you at your scheduled jobs and behavior changes in the upgrade guide and links to a page that exists. `spree upgrade --plan` now lists the same data backfills a real run executes after the Spree gems are bumped, instead of nothing.
+
+## 3.0.2
+
+### Patch Changes
+
+- [#14644](https://github.com/spree/spree/pull/14644) [`6723b99`](https://github.com/spree/spree/commit/6723b99bdf8453f6e3a2a6666211f69d658f566e) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - `spree init` says where sample data comes from. A run that seeds no admin (no `--admin-email`) cannot load sample data, since its imports need an owner, so init now points at the setup screen's own "Load sample data" option instead of skipping silently. The `--admin-email` and `--no-sample-data` help text says which flags belong to scripted installs.
+
+- [#14667](https://github.com/spree/spree/pull/14667) [`53008b4`](https://github.com/spree/spree/commit/53008b4a30eeca633206e726f0303f1f8c0673d3) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Scaffold dashboards with the layout they grow into, and the packages their first import needs.
+
+  A new dashboard app shipped four files and no structure to follow, so the first customization had nowhere obvious to go. Both starters now carry the layout the dashboard uses internally — `pages/`, `hooks/`, `tables/`, `schemas/` and `locales/`, one file per resource — documented in the README, with an `AGENTS.md` covering the conventions a coding agent cannot infer.
+
+  They also gain `@spree/dashboard-core` and `@spree/dashboard-ui` as direct dependencies. Both were installed already but only as transitive ones, so under pnpm an import of either failed until you added it by hand.
+
+## 3.0.1
+
+### Patch Changes
+
+- Fixed first-run setup failing partway through, and scaffolded both admin apps.
+
+  Several failures could leave a new project unusable: minting the CLI's API key raised "Name has already been taken" on any re-run, so a setup interrupted for any reason could never be completed; Mailpit's ports were not probed like the web port, so another Spree project or a local mail catcher failed `docker compose up` with a raw Docker daemon error; sample data was loaded before first-run setup created an admin to own it, aborting the run; and a failed key mint reported that the stack was not running, sending operators after a stack that was running fine.
+
+  Scaffolds also create `apps/seller-dashboard` alongside `apps/dashboard` (`spree add seller-dashboard` adds it to an existing project). The React Dashboard is the admin in Spree 6, so it is no longer opt-in behind a flag, and first-run setup no longer prompts for an admin email and password — the account is created on the dashboard's own setup screen, which the browser opens automatically.
+
+## 3.0.0
+
+### Major Changes
+
+- [#14385](https://github.com/spree/spree/pull/14385) [`464df81`](https://github.com/spree/spree/commit/464df815f2b305b21c47ecaa722d35f52ae6a1f1) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Dropped the legacy Rails admin from the CLI.
+
+  `spree_admin` is removed in Spree 6.0, so the CLI no longer references it:
+
+  - `spree dev` and `spree eject` no longer compile the admin Tailwind stylesheet or start its watcher — the `spree:admin:tailwindcss:build` and `spree:admin:tailwindcss:watch` rake tasks went with the gem.
+  - `spree dev`, `spree init` and `spree open` no longer point at `http://localhost:<port>/admin`, which now 404s. With a dashboard app present they open its Vite dev server; without one they open the store, and the summary card says to run `spree add dashboard`.
+
+  Admin UI now ships as the React dashboard. Run it with `spree dev` (co-runs the dashboard dev server) or add it with `spree add dashboard`. Projects ejected before this release can delete the orphaned `backend/app/assets/builds/spree/admin/` directory.
+
+- [#14431](https://github.com/spree/spree/pull/14431) [`aab4b5c`](https://github.com/spree/spree/commit/aab4b5ca517d2ef559a5ba292965d66bd2d6f38d) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - `spree init` asks who the admin is instead of seeding a known account.
+
+  Spree 6.0 stops seeding `spree@example.com` / `spree123`, so the CLI no longer prints or assumes those credentials:
+
+  - `spree init` prompts for an admin email and password, or takes `--admin-email` / `--admin-password`. Both are validated before Docker starts, rather than failing minutes into the run, and passing only one is rejected.
+  - A non-interactive run without those flags (CI, a piped invocation) creates **no admin**. The seed prints a one-time setup link instead, and the summary card shows it — open it to create the first account in the dashboard. `--open` goes straight there.
+  - Sample data is skipped on that path, since its import needs an admin to own it. Load it after setup with `spree sample-data`.
+  - `spree dev` names the admin email `spree init` seeded; when no account was seeded it points at the setup link rather than guessing an address.
+  - The exported `DEFAULT_ADMIN_EMAIL` and `DEFAULT_ADMIN_PASSWORD` constants are gone.
+
+  Scripted installs that relied on the old credentials must now pass `--admin-email` and `--admin-password`.
+
+### Minor Changes
+
+- Added the marketplace Seller Panel to project scaffolding and deployment.
+
+  `spree add seller-dashboard` scaffolds the panel into `apps/seller-dashboard/`, and `create-spree-app` now creates both admin apps. The CLI bundles the seller-panel starter template alongside the dashboard one, so the Spree starter's Docker image can bake both and serve the panel at `/sellers`.
+
+### Patch Changes
+
+- [#14417](https://github.com/spree/spree/pull/14417) [`7e35951`](https://github.com/spree/spree/commit/7e35951361a6cee7b735640b0228710928719fee) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Rich-text fields read as plain text plus HTML.
+
+  Spree 6.0 stores rich text as sanitized HTML in plain text columns instead of Action Text. The write params are unchanged — `description` and `internal_note` still take the value, and that value is HTML.
+
+  What changed is the read side:
+
+  - `internal_note_html` is now readable on `Order`, and `internal_note` (plain text) on `Customer`. Previously the order serializer returned only plain text and the customer serializer only HTML; both now return the pair.
+  - `description` returns tag-stripped plain text, with the markup under `description_html`. Hydrate an editor from `description_html`, not `description`.
+
+  The field stores HTML, so send markup — a plain-text value with newlines in it renders as one run-on line.
+
+- [#14376](https://github.com/spree/spree/pull/14376) [`a52a6da`](https://github.com/spree/spree/commit/a52a6da42f5c456e889f8bba12ee7194934289b1) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Admin API additions from the 6.0 core rewrite:
+
+  - `deliveryMethods.rules` CRUD and `deliveryMethods.ruleTypes()` — delivery method eligibility rules (item total, weight).
+  - `orders.discountCodes.create/delete` — apply and remove coupon codes on draft orders with the storefront's pending semantics.
+  - `expand=cart` on orders returns the originating cart (new admin `Cart` type); the embedded promotion summaries moved from the `discounts` key to `applied_promotions` (the `discounts` name stays reserved for the typed money rows at `/orders/:id/discounts`).
+  - Delivery methods accept `stock_location_ids` for pickup; delivery zones, delivery methods and stock locations are store-scoped.
+  - `Order` gains `cart_id` and `coupon_code`; `DeliveryZone.members` requires `expand=members`.
+
+## 2.4.9
+
+### Patch Changes
+
+- [#14357](https://github.com/spree/spree/pull/14357) [`f811d1e`](https://github.com/spree/spree/commit/f811d1ee5f604e24f86aa59be3317f87627fe3c7) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - The bundled offline Admin API spec now documents the `stores` array on admin user responses, and the `searchable`, `sortable`, and `filter_key` fields on custom field definitions.
+
+## 2.4.8
+
+### Patch Changes
+
+- [`61f85af`](https://github.com/spree/spree/commit/61f85af83531f3bf5f17aaf105f144b02336d73c) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - Auto-enable the storefront wholesale B2B portal on sample-data scaffolds: create-spree-app writes `SPREE_WHOLESALE_CHANNEL=wholesale` into the storefront `.env.local`, and setup output points at the portal (`/wholesale`) with the buyer-approval flow. The portal runs on the default publishable key — no extra key or backend changes involved.
+
+## 2.4.7
+
+### Patch Changes
+
+- [#14347](https://github.com/spree/spree/pull/14347) [`b78071f`](https://github.com/spree/spree/commit/b78071f5ae3f985a07eeeaa4d24ab4a4bdff7e3c) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - All app-facing commands now fall back to a one-off container (`docker compose run --rm`) when the web container is not running, instead of failing on `docker compose exec`. Previously only `spree bundle`, `spree console`, `spree shell`, and `spree rspec` did this; the same behavior now covers `spree migrate` (+ `migrate:rollback`, `migrate:status`), `spree rails`, `spree rake`, `spree task`, `spree exec`, `spree routes`, `spree generate`, `spree seed`, `spree sample-data`, `spree user`, `spree api-key`, and `spree upgrade` — which no longer refuses to run while the stack is down. The one-off container cold-starts and health-waits postgres, so these commands work from a fully stopped stack. On the fallback path `spree migrate` collapses its two steps into a single invocation, paying the one-off container's cold Rails boot once.
+
+## 2.4.6
+
+### Patch Changes
+
+- [#14339](https://github.com/spree/spree/pull/14339) [`b71e613`](https://github.com/spree/spree/commit/b71e61326289d7ef4038a4bd55f353569a242d52) Thanks [@damianlegawiec](https://github.com/damianlegawiec)! - The embedded dashboard-starter template now floats its `@spree/*` dependency ranges to the newest published release (floored at the versions the template was built against) instead of pinning the minor — scaffolded apps pick up new dashboard releases without waiting for a CLI release. The template also slims to `@spree/dashboard` + `@spree/admin-sdk`: `defineDashboardPlugin` is re-exported from `@spree/dashboard`, and `@spree/dashboard-core` / `@spree/dashboard-ui` are added by the app only when building custom pages.
+
+## 2.4.5
+
+### Patch Changes
+
+- `spree build --production` is now a plain `docker build` from the project
+  root: the updated spree-starter Dockerfile normalizes its own build context
+  (detecting the `backend/` layout and a customized `apps/dashboard`), so the
+  staged-copy and named-build-context machinery is gone, and what the CLI
+  builds is byte-for-byte what Render/Railway build straight from the repo. A
+  root `.dockerignore` is written when missing so the context stays lean.
+  Pre-normalization Dockerfiles keep the old `backend/` context, with a
+  warning when a dashboard would be left out.
+
+- Handle the Solid Queue single-container compose layout: new spree-starter
+  projects have no `worker` or `redis` services (jobs run inside Puma, stored
+  in Postgres), so `spree dev`, `restart`, `build`, and `db:reset` now target
+  the services the compose file actually defines instead of hard-coding
+  `web worker` — Sidekiq-era projects keep working unchanged. `spree logs
+worker` on a worker-less project explains the in-process model and streams
+  web logs, pointing at the `/jobs` dashboard.
+
+- Removed the `render.yaml` amendment from `spree add dashboard` — the
+  starter's Blueprint now deploys the backend as a Docker service built from
+  the repo root, which bakes `apps/dashboard` into the image by itself. The
+  scaffolded dashboard also pins its package manager (`packageManager` +
+  `pnpm-workspace.yaml` with `trustLockfile`) so image rebuilds don't break
+  when pnpm changes install-policy defaults — pnpm 11's `minimumReleaseAge`
+  re-validation fails any rebuild whose lockfile references day-old packages,
+  including every Spree release day (`@spree/*` is exempted from the gate).
+
+## 2.4.4
+
+### Patch Changes
+
+- Streamline the post-setup summary for projects with the React Dashboard.
+  The dashboard's dev server is presented as THE admin — the
+  `cd apps/dashboard && pnpm dev` command with the admin credentials and a
+  dim pointer to the classic admin — instead of listing two admins where only
+  the classic one carried credentials. The image-served `/dashboard` build
+  stays a deployment detail in the docs. `spree dev` (and first-run setup)
+  now co-runs the dashboard's Vite dev server with the Docker stack — one
+  command brings up the whole dev environment, its output joins the stream
+  with a `dashboard |` prefix, Ctrl+C stops everything, a dashboard crash
+  warns without taking the API down, and `--open` waits for Vite and opens
+  the URL it actually reports (ports auto-bump when 5173 is taken). `spree add dashboard` gains
+  `--quiet` to skip its summary note when a wrapping tool (create-spree-app)
+  prints its own. Projects without the dashboard keep the classic summary
+  unchanged.
+
+## 2.4.3
+
+### Patch Changes
+
+- Fix dashboard logins dying on CORS in scaffolded apps. `spree add
+dashboard` wrote `VITE_SPREE_API_URL=http://localhost:<port>` into
+  `apps/dashboard/.env.local` — but that variable is the SDK's switch to
+  absolute cross-origin URLs (meant for production deploys on a different
+  origin), so requests bypassed the Vite dev proxy and the browser blocked
+  them (`localhost:5173` → `localhost:3000` is cross-origin; the auth cookie
+  is `SameSite=Lax` on top). The scaffold now writes `VITE_API_PROXY_TARGET`
+  (the proxy target — the SPA stays same-origin, the SDK stays on relative
+  URLs), the dashboard template's Vite config reads it (via `loadEnv` — Vite
+  doesn't load `.env` files into `process.env` for configs), and the CLI
+  writes or repairs `.env.local` automatically: on scaffold, on every
+  `spree dev` boot, and on a `spree add dashboard` re-run — covering fresh
+  clones (the file is gitignored) and projects scaffolded by older CLI
+  versions. Repair rewrites only the broken line; everything else in the
+  file is preserved.
+
+## 2.4.2
+
+### Patch Changes
+
+- `spree dev` on a project that was never set up now runs the full first-run
+  flow automatically (pull fresh images, start services, seed the database,
+  configure API keys) instead of a bare `docker compose up`. A bare `up` never
+  pulls, so a mutable tag (`latest`) cached weeks ago by another project
+  silently booted an old Spree whenever the first boot happened through
+  `spree dev` — a `--no-start` scaffold, an interrupted create-spree-app run,
+  or a fresh clone. A setup that was itself interrupted partway (e.g. Ctrl+C
+  during the first image pull) is also detected and completed on the next
+  `spree dev`, for projects scaffolded by create-spree-app 1.1.1+. The
+  sample-data choice create-spree-app persists in `.env`
+  (`SPREE_SAMPLE_DATA`) is honored, so a deferred first run keeps the answer
+  given at scaffold time. Setup also installs `apps/storefront` and
+  `apps/dashboard` dependencies when they're missing (a fresh clone, or a
+  scaffold whose install step failed) — mirroring create-spree-app's per-app
+  install steps — so every app is runnable with `pnpm dev` right after.
+  Already-initialized projects are untouched: later boots never pull, dev
+  stays offline-friendly, and upgrades stay explicit via `spree update`.
+
+## 2.4.1
+
+### Patch Changes
+
+- Re-embed the dashboard-starter template against `@spree/dashboard` 0.10.1
+  and `@spree/admin-sdk` ^0.6.0. 0.10.1 ships the Vite integration compiled to
+  JS — registry installs of 0.10.0 failed the host build with
+  `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` when `vite.config.ts` imported
+  `@spree/dashboard/vite` — and admin-sdk 0.5.0 lacks the Admin API endpoints
+  and types the dashboard consumes (the 0.x caret in the previous template pin
+  never resolves to 0.6.0). The `spree dashboard plugin` scaffold now pins
+  `@spree/admin-sdk` ^0.6.0 as well.
+
+## 2.4.0
+
+### Minor Changes
+
+- Add `spree add dashboard` — scaffolds the React Dashboard starter (Developer
+  Preview), bundled inside the CLI with version pins matching the release, into
+  `apps/dashboard/` of an existing project and points it at the project's API
+  (`--template <path|git-url>` overrides the bundled copy). Also make
+  `spree plugin new` fully non-interactive: every prompt has a flag
+  (`--ruby-name`, `--module-name`, `--npm-scope`, `--author`, `--author-email`,
+  `--license`, `-y`), with author details defaulting from git config.
+
+## 2.3.9
+
+### Patch Changes
+
+- Add `spree shell` (alias: `spree bash`) — open an interactive bash shell inside the web container, the system-shell sibling of `spree console` (Rails) and `spree db:console` (psql). When the web container is down — a crash-looping stack is exactly when a shell is most useful — it falls back to a one-off container against the same volumes, with postgres cold-started and health-waited first.
+
+## 2.3.8
+
+### Patch Changes
+
+- Add `spree rspec` — run the RSpec suite inside the web container without spelling out `spree bundle exec rspec`. Everything after `rspec` is forwarded verbatim (`spree rspec spec/models/spree/brand_spec.rb:15`, `spree rspec --format documentation`), `RAILS_ENV=test` is forced so tests always hit the test database, and when the stack is down the command falls back to a one-off container that cold-starts postgres first.
+
+## 2.3.7
+
+### Patch Changes
+
+- Compile the admin dashboard stylesheet on ejected projects. Ejecting bind-mounts `./backend` over the image's precompiled `app/assets/builds`, and the dev stack never runs `assets:precompile`, so `spree/admin/application.css` was missing and every admin page 500'd. `spree eject` now compiles it, and `spree dev` compiles it if missing and then runs the Tailwind watcher so admin edits recompile live.
+
+## 2.3.6
+
+### Patch Changes
+
+- Fix `spree --version` reporting a stale hardcoded `2.0.0` instead of the installed CLI version. The version is now read from the package's `package.json` at runtime, so `spree -V` and `npx spree -V` always match the release you have installed.
+
+## 2.3.5
+
+### Patch Changes
+
+- Fix `spree db:reset` and `spree console` when the stack is down or already serving. `db:reset` now self-heals from any state: it stops the web + worker containers holding open Postgres connections (which a plain `DROP DATABASE` rejects), then runs the drop/create/migrate/seed chain in a one-off `docker compose run --rm web` container whose dependencies cold-start automatically — so a reset works whether the stack is up, partially up, or fully stopped, and a stale host DB client (TablePlus/psql on port 5433) blocking the drop now produces an actionable hint instead of a raw error. `spree console` falls back to a one-off container when web is down (mirroring `spree bundle`) instead of failing, and `spree db:console` guides you to start the stack when Postgres isn't running. Both new fallbacks refuse cleanly in monorepo edge projects, consistent with the other commands.
+
+## 2.3.4
+
+### Patch Changes
+
+- Fix `spree upgrade` on create-spree-app projects. Running it from the `backend/` directory no longer fails on a missing `.env` — the CLI now resolves to the project root automatically. When the bundle is out of sync (e.g. an un-checked-out git gem source), it surfaces the real bundler error and points you at `spree bundle install` instead of a misleading "No Spree gems detected". And it now refuses early with a clear message when the stack is down or in a monorepo edge project, rather than failing deep in a Docker command.
+
+## 2.3.3
+
+### Patch Changes
+
+- Fix an intermittent `failed to mkdir … file exists` error on the first `spree eject` / `spree dev` / `spree init` / `spree update` of a fresh project. On a cold `bundle_cache` volume the `web` and `worker` containers raced to populate it; the CLI now brings `web` up alone first so it seeds the volume uncontended before the rest of the stack starts.
+
+## 2.3.2
+
+### Patch Changes
+
+- `spree api status` now shows the API key's live scopes fetched from the server instead of the stale snapshot saved at mint time. Falls back to the local snapshot (clearly labelled) when the server can't report scopes.
+
+## 2.3.1
+
+### Patch Changes
+
+- Fix `spree api` product-create examples in the CLI help text and docs. A product's price lives on its variants, so the example now ships a `prices` array (for a simple product) instead of an unsupported top-level `price` scalar, and monetary amounts are quoted strings (`"29.99"`) to match the API's read/write format and preserve localized input.
+
+## 2.3.0
+
+### Minor Changes
+
+- `spree init` now mints a read-only secret key and saves it to `.spree/credentials.json`, so `spree api` works immediately without a first-use minting round-trip. The setup summary shows both the Store API publishable key and the Admin API secret key.
+
+## 2.2.1
+
+### Patch Changes
+
+- Fix `npm install` failing with `EUNSUPPORTEDPROTOCOL "workspace:"`. `@spree/admin-sdk` is bundled into the CLI at build time, so it's now a dev dependency — the published `package.json` no longer carries an unresolvable `workspace:` runtime dependency.
+
+## 2.2.0
+
+### Minor Changes
+
+- New `spree api` and `spree auth` command groups — a generic Admin API client (`get`/`post`/`patch`/`delete`) built into the CLI:
+
+  - `spree api get|post|patch|delete <path>` — generic verbs with Ransack `-q` filters, `--sort`/`--page`/`--limit`/`--expand`/`--fields`, and JSON bodies from inline/`@file`/stdin
+  - `spree api endpoints` / `spree api schema` — offline schema introspection over a bundled OpenAPI snapshot, including each endpoint's required scope
+  - `spree api status` — resolved credentials + server reachability
+  - `spree auth login|status|logout|list` — named profiles in `~/.config/spree/config.json`
+  - `spree completion bash|zsh|fish` — shell completion for resource paths, Ransack predicate stems, and scope names, resolved offline from the bundled spec
+  - Zero-config credentials inside a project: a read-only key is minted via the dev stack on first use and stored in `.spree/credentials.json`. For other servers, `SPREE_API_KEY` is enough — the host defaults to `http://localhost:3000`; set `SPREE_BASE_URL` or save a profile for a remote store.
+
+  Output is JSON: indented and colored in a terminal, compact and uncolored when piped (clean for `jq`).
+
+  Works against any Spree 5.5+ instance.
+
+- `spree api-key create` now supports scopes for secret keys via `--scopes` (comma-separated, e.g. `--scopes read_orders,write_products`) or an interactive prompt defaulting to `read_all`. Required against Spree 5.5+ servers, where secret keys must carry at least one scope.
+
+## 2.1.2
+
+### Patch Changes
+
+- `spree generate controller` now forwards to the Rails `controller` generator instead of the non-existent `spree:controller`.
+
+## 2.1.1
+
+### Patch Changes
+
+- `spree eject` now repairs dev compose files scaffolded with the broken `.:/rails` bind-mount and runs `db:prepare` after switching to the dev stack. The dev image bypasses the entrypoint that creates the database in the prebuilt image, so without this the ejected stack booted against a missing `spree_development` database.
+
+## 2.1.0
+
+### Minor Changes
+
+- `spree dev` now runs the app in the foreground like every other dev server (`vite dev`, `bin/dev`): it streams web + worker logs and `Ctrl+C` stops them, while the database containers keep running for a fast next boot — `spree stop` remains the full shutdown. Previously `Ctrl+C` only detached from the logs and left everything running. Real compose failures (daemon down, port conflict, bad config) now exit with the underlying code instead of printing a clean shutdown message; a `Ctrl+C` stop still ends cleanly.
+
+  Add `spree restart` — restarts `web` + `worker` in place (same image, same volumes, fresh Rails process). For `config/initializers` changes and anything Zeitwerk doesn't reload; it does not pick up Gemfile or compose changes.
+
+  `spree bundle` now works when the stack is down: if the `web` container isn't running — for example after a `Gemfile.lock` change crash-loops the boot, which is exactly when bundler is needed — it runs bundler in a one-off container against the same `bundle_cache` volume instead of failing on `exec`.
+
+  `spree dev` and `spree build` detect monorepo edge projects (`SPREE_PATH` in `.env`) and refuse with a pointer to the matching `pnpm server:*` script, instead of materializing the wrong compose config against the running edge stack.
+
+  `spree migrate` prints a header for each step and a completion note — previously a fully up-to-date run produced no output at all, leaving no signal that anything ran.
+
+  `spree upgrade`'s closing "Next steps" panel now includes the SDK side of the upgrade: when the project has the conventional `apps/storefront` consuming `@spree/sdk`, it names the currently-declared version and reminds you to bump it to the release matching the new Spree version.
+
+- Add `spree generate`, `spree migrate` (+ `migrate:rollback`, `migrate:status`), `spree build`, `spree db:reset`, `spree db:console`, and `spree routes`. `spree generate` auto-prefixes `spree:` so `spree generate model Brand name:string` invokes the Spree generator. `spree db:reset` and `spree build --reset-bundle` are destructive and prompt by default; pass `--yes` to skip the prompt in CI. `spree build` targets the active `docker-compose.yml` (the same file `spree dev` runs) and refuses with a pointer to `spree eject` when it has no `build:` section; in monorepo edge projects it points at `pnpm server:build`.
+
+  `spree eject` no longer runs a separate `docker compose build` step (the dev compose builds on first `up -d` automatically). Its description and post-eject hints now point at `spree bundle add` for gems and `spree build` for Dockerfile / `.ruby-version` changes.
+
+- Add `spree exec`, `spree rails`, `spree bundle`, `spree rake`, and `spree task` as generic passthrough commands so any Rails / bundler / rake invocation is reachable through `spree` without `docker compose exec` incantations. `spree task <name>` auto-prefixes `spree:` to save the namespace prefix on the common path. `spree console` is rewired onto the same helper.
+
+- Add `spree upgrade` — sequencer around the dev upgrade flow. Runs `bundle update`, applies pending migrations, then delegates to `bin/rake spree:upgrade` (which executes the version-specific data backfills from a manifest shipped inside `spree_core`). On production, only the rake task runs — your deploy pipeline handles `bundle install` and `db:migrate`. Flags `--plan`, `--step <id>`, `--to <version>`, `--yes` map to env vars (`DRY_RUN`, `STEP`, `TO`) on the rake task so the same arguments work on both surfaces.
+
+### Patch Changes
+
+- Run `spree:search:reindex` during `spree init` after sample data is loaded. This initializes the Meilisearch search index so product search works immediately after setup.
+
+## 2.0.0
+
+### Major Release
+
+Stable release of `@spree/cli` for Spree Commerce 5.4.0. Docker-based project management CLI with `spree init`, `spree start`, `spree stop`, `spree eject`, and `spree update` commands.
+
+## 2.0.0-beta.7
+
+### Patch Changes
+
+- Run `spree:search:reindex` during `spree init` after sample data is loaded. This initializes the Meilisearch search index so product search works immediately after setup.
+
+## 2.0.0-beta.6
+
+### Minor Changes
+
+- Add `spree eject` command to switch from prebuilt Docker image to building from local `backend/` directory. Also update port detection to read `SPREE_PORT` from `.env`.
+
+## 2.0.0-beta.5
+
+### Patch Changes
+
+- Automatically update storefront `.env.local` with the real API key during `spree init`
+
+## 2.0.0-beta.4
+
+### Patch Changes
+
+- Pull latest Docker image during `spree init` to ensure fresh setups always use the newest version
+- Show Docker pull progress output during `spree init` and `spree update` instead of a spinner
